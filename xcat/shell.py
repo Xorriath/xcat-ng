@@ -1,9 +1,8 @@
 import asyncio
-from typing import List, Dict, FrozenSet
 import shlex
 
 import click
-import appdirs
+import platformdirs
 from pathlib import Path
 from prompt_toolkit import PromptSession
 from prompt_toolkit.history import FileHistory
@@ -18,10 +17,10 @@ from .attack import AttackContext, check
 
 class BaseCommand:
     name: str
-    alias: List[str] = []
+    alias: list[str] = []
     help_text: str
-    args: List[str] = []
-    required_features: FrozenSet[str] = frozenset()
+    args: list[str] = []
+    required_features: frozenset[str] = frozenset()
     context: AttackContext
 
     def __init__(self, context: AttackContext):
@@ -34,7 +33,7 @@ class BaseCommand:
     async def run(self, args):
         raise NotImplementedError()
 
-    def has_features(self, current_features: Dict[str, bool]):
+    def has_features(self, current_features: dict[str, bool]):
         if not self.required_features:
             return True
         return any(current_features[f] for f in self.required_features)
@@ -86,6 +85,8 @@ class Get(BaseCommand):
     args = ['expression']
 
     async def run(self, args):
+        if not args:
+            return self.print_usage()
         expression = args[0]
         await display.display_xml(
             algorithms.get_nodes(self.context, E(expression))
@@ -98,8 +99,10 @@ class GetString(BaseCommand):
     args = ['expression']
 
     async def run(self, args):
+        if not args:
+            return self.print_usage()
         expression = args[0]
-        print(algorithms.get_string(self.context, E(expression)))
+        print(await algorithms.get_string(self.context, E(expression)))
 
 
 class Time(BaseCommand):
@@ -126,9 +129,7 @@ class Cat(BaseCommand):
             path = args[0]
         available = await check(self.context, func.unparsed_text_available(path))
         if not available:
-            print(f'File {path} does not seem to be available')
-            if input('Try anyway? [y/n]').lower() != 'y':
-                return
+            click.echo(click.style(f'Warning: File {path} does not seem to be available, trying anyway...', 'yellow'))
 
         expr = func.unparsed_text_lines(path)
         length = await algorithms.count(self.context, expr)
@@ -269,13 +270,13 @@ class Help(BaseCommand):
 
 
 async def shell_loop(context: AttackContext):
-    history_dir = Path(appdirs.user_data_dir('python-xcat'))
+    history_dir = Path(platformdirs.user_data_dir('python-xcat'))
     if not history_dir.exists():
         history_dir.mkdir(parents=True)
     history = FileHistory(history_dir / 'history')
     session = PromptSession(history=history)
 
-    commands: Dict[str, BaseCommand] = {
+    commands: dict[str, BaseCommand] = {
         c.name: c(context)
         for c in BaseCommand.__subclasses__()
     }
@@ -306,7 +307,11 @@ async def shell_loop(context: AttackContext):
             auto_suggest=AutoSuggestFromHistory()
         )
 
-        split_input = shlex.split(user_input)
+        try:
+            split_input = shlex.split(user_input)
+        except ValueError as e:
+            print(f'Invalid input: {e}')
+            continue
         if not split_input:
             continue
 
@@ -327,4 +332,7 @@ async def shell_loop(context: AttackContext):
                 print(click.style(', '.join(command.required_features), 'red'))
                 print('Use toggle_feature to force these on')
         else:
-            await command.run(args)
+            try:
+                await command.run(args)
+            except Exception as e:
+                click.echo(click.style(f'Error: {e}', 'red'))

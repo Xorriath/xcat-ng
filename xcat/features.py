@@ -1,5 +1,6 @@
 import asyncio
-from typing import List, NamedTuple, Callable, Union
+from collections.abc import Callable
+from typing import NamedTuple
 
 from xpath import E, Expression, func, Functions
 
@@ -13,7 +14,7 @@ saxon_func = Functions('saxon:')
 
 class Feature(NamedTuple):
     name: str
-    tests: List[Union[Expression, Callable]]
+    tests: list[Expression | Callable]
 
 
 def test_oob(path):
@@ -100,16 +101,21 @@ features = [
 ]
 
 
-async def detect_features(context: AttackContext, injector: Injection) -> List[Feature]:
+async def detect_features(context: AttackContext, injector: Injection) -> list[Feature]:
     returner = []
 
     for feature in features:
-        futures = [
-            check(context, injector(context.target_parameter_value, test))
-            if not callable(test)
-            else test(context, injector)
-            for test in feature.tests
-        ]
+        futures = []
+        for test in feature.tests:
+            if callable(test):
+                futures.append(test(context, injector))
+            elif context.injection:
+                # Injection is set (e.g. time-based mode): pass raw expression
+                # to check(), which handles injection wrapping + delay
+                futures.append(check(context, test))
+            else:
+                # No injection set: pre-format through injector
+                futures.append(check(context, injector(context.target_parameter_value, test)))
         checks = await asyncio.gather(*futures)
 
         returner.append((feature, all(checks)))

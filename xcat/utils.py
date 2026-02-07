@@ -1,6 +1,6 @@
 import re
 import urllib.request
-from typing import Callable, Tuple
+from collections.abc import Callable
 
 import click
 
@@ -101,7 +101,7 @@ class NegatableString(Negatable):
         return value
 
 
-def make_match_function(true_code: Tuple[bool, int], true_string: Tuple[bool, str]) -> Callable[[int, str], bool]:
+def make_match_function(true_code: tuple[bool, int], true_string: tuple[bool, str]) -> Callable[[int, str], bool]:
     def check_code(response_code: int):
         if true_code is None:
             return True

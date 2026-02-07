@@ -17,18 +17,17 @@ include = [
 xcat = "xcat.cli:cli"
 
 [tool.poetry.dependencies]
-python = ">=3.7"
+python = ">=3.10"
 aiodns = "*"
-aiohttp = "==3.*,>=3.0.0"
-appdirs = "*"
-cchardet = "*"
-click = "*"
+aiohttp = ">=3.9,<4"
+platformdirs = "*"
+click = ">=8.0"
 colorama = "*"
-prompt-toolkit = "<4"
-xpath-expressions = "==1.*,>=1.0.0"
+prompt-toolkit = ">=3.0,<4"
+xpath-expressions = ">=1.0,<2"
 
-[tool.poetry.dev-dependencies]
-bumpversion = "^0.6.0"
+[tool.poetry.group.dev.dependencies]
+bump2version = "^1.0.0"
 
 [build-system]
 requires = ["poetry-core"]

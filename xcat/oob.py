@@ -1,6 +1,5 @@
 import asyncio
 import random
-from typing import Tuple
 from urllib import parse
 
 from aiohttp import web
@@ -55,7 +54,7 @@ def create_app():
     return app
 
 
-def expect_data(app: web.Application) -> Tuple[str, asyncio.Future]:
+def expect_data(app: web.Application) -> tuple[str, asyncio.Future]:
     expectations = app['expectations']
     identifier = str(len(expectations))
     future = asyncio.Future()

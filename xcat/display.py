@@ -1,10 +1,15 @@
 import asyncio
 import contextlib
 import sys
-from collections import namedtuple
+from typing import NamedTuple
 from xml.sax.saxutils import XMLGenerator, escape
 
-XMLNode = namedtuple('XMLNode', 'name attributes text comments')
+
+class XMLNode(NamedTuple):
+    name: str
+    attributes: dict[str, str]
+    text: str
+    comments: list[str]
 
 
 async def display_xml(nodes, display=None):
@@ -17,9 +22,8 @@ async def display_xml(nodes, display=None):
     for (node, children) in nodes:
         display.output_start_node(node)
 
-        results = await asyncio.gather(*children)
-
-        for result in results:
+        for child in children:
+            result = await child
             await display_xml([result], display)
 
         display.output_end_node(node)
