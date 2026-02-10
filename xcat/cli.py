@@ -49,6 +49,8 @@ def attack_options(func):
                   help='Use in-band extraction via response diffing (much faster, outputs raw text)')
     @click.option('--time', 'time_nesting', required=False, type=int, default=None,
                   help='Time-based blind extraction using N nested count() for delay')
+    @click.option('--proxy', required=False, type=str, default=None,
+                  help='HTTP proxy URL (e.g. http://10.129.116.151:3128)')
     @click.argument('url')
     @click.argument('target_parameter')
     @click.argument('parameters', nargs=-1, type=utils.DictParameters())
@@ -56,7 +58,7 @@ def attack_options(func):
     @functools.wraps(func)
     def wrapper(ctx, url, target_parameter, parameters, concurrency, fast, body, headers, method,
                 encode, true_string, true_code, enable, disable, oob, tamper, inband, time_nesting,
-                **kwargs):
+                proxy, **kwargs):
         if body and encode != 'url':
             ctx.fail('Can only use --body with url encoding')
 
@@ -115,6 +117,7 @@ def attack_options(func):
             oob_details=oob,
             tamper_function=tamper_function,
             inband=inband,
+            proxy=proxy,
             time_based=bool(time_nesting),
             time_delay_expr=make_delay_payload(time_nesting) if time_nesting else None,
         )

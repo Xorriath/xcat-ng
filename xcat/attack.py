@@ -48,6 +48,7 @@ class AttackContext(NamedTuple):
     oob_details: str
     tamper_function: Callable[[], None]
     inband: bool = False
+    proxy: str | None = None
     time_based: bool = False
     time_delay_expr: str | None = None
     time_threshold: float = 0.0
@@ -127,7 +128,7 @@ async def timed_request(context: AttackContext, raw_value: str) -> float:
 
     async with context.semaphore:
         start = time_mod.monotonic()
-        async with context.session.request(context.method, context.url, **args) as resp:
+        async with context.session.request(context.method, context.url, proxy=context.proxy, **args) as resp:
             await resp.text()
         return time_mod.monotonic() - start
 
@@ -155,12 +156,12 @@ async def check(context: AttackContext, payload: str):
     async with context.semaphore:
         if context.time_based:
             start = time_mod.monotonic()
-            async with context.session.request(context.method, context.url, **args) as resp:
+            async with context.session.request(context.method, context.url, proxy=context.proxy, **args) as resp:
                 await resp.text()
                 elapsed = time_mod.monotonic() - start
             return elapsed >= context.time_threshold
         else:
-            async with context.session.request(context.method, context.url, **args) as resp:
+            async with context.session.request(context.method, context.url, proxy=context.proxy, **args) as resp:
                 body = await resp.text()
                 return context.match_function(resp.status, body)
 
@@ -195,7 +196,7 @@ async def get_response_with_match(context: AttackContext, raw_value: str,
         context.tamper_function(context, args)
 
     async with context.semaphore:
-        async with context.session.request(context.method, context.url, **args) as resp:
+        async with context.session.request(context.method, context.url, proxy=context.proxy, **args) as resp:
             body = await resp.text()
             match = context.match_function(resp.status, body)
             return body, match
