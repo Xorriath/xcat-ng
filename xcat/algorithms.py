@@ -160,7 +160,7 @@ async def linear_search(context: AttackContext, expression, max_val=200):
 
 
 async def binary_search(context: AttackContext, expression, min, max=25):
-    if await check(context, expression > max):
+    if max < 1_000_000 and await check(context, expression > max):
         return await binary_search(context, expression, min, max * 2)
 
     while True:
@@ -199,6 +199,10 @@ async def substring_search(context: AttackContext, expression):
 
 
 async def codepoint_search(context: AttackContext, expression):
+    # Verify the character exists first — string-to-codepoints("") returns
+    # an empty sequence which causes unpredictable comparison results
+    if not await check(context, func.string_length(expression) > 0):
+        return None
     result = await binary_search(
         context,
         expression=func.string_to_codepoints(expression),
