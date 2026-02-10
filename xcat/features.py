@@ -15,6 +15,9 @@ saxon_func = Functions('saxon:')
 class Feature(NamedTuple):
     name: str
     tests: list[Expression | Callable]
+    # Expressions that MUST return False.  If XPath errors cause the oracle to
+    # always return True, the false_tests will catch the false-positive.
+    false_tests: list[Expression] = []
 
 
 def test_oob(path):
@@ -38,6 +41,9 @@ features = [
                 func.lower_case('A') == 'a',
                 func.ends_with('thetest', 'test'),
                 func.encode_for_uri('test') == 'test'
+            ],
+            false_tests=[
+                func.lower_case('A') == 'z',
             ]),
     Feature('xpath-3',
             [
@@ -46,23 +52,38 @@ features = [
     Feature('xpath-3.1',
             [
                 func.contains_token('a', 'a')
+            ],
+            false_tests=[
+                func.contains_token('a', 'z'),
             ]),
     Feature('normalize-space',
             [
                 func.normalize_space('  a  b ') == 'a b'
+            ],
+            false_tests=[
+                func.normalize_space('  a  b ') == 'zzz',
             ]),
     Feature('substring-search',
             [
                 func.string_length(func.substring_before(ASCII_SEARCH_SPACE, 'h')) == ASCII_SEARCH_SPACE.find('h'),
                 func.string_length(func.substring_before(ASCII_SEARCH_SPACE, 'o')) == ASCII_SEARCH_SPACE.find('o')
+            ],
+            false_tests=[
+                func.string_length(func.substring_before(ASCII_SEARCH_SPACE, 'h')) == 9999,
             ]),
     Feature('codepoint-search',
             [
                 func.string_to_codepoints("test")[1] == 116
+            ],
+            false_tests=[
+                func.string_to_codepoints("test")[1] == 999,
             ]),
     Feature('environment-variables',
             [
                 func.exists(func.available_environment_variables())
+            ],
+            false_tests=[
+                func.empty(func.available_environment_variables()),
             ]),
     Feature('document-uri',
             [
@@ -95,6 +116,9 @@ features = [
     Feature('saxon',
             [
                 saxon_func.evaluate('1+1') == 2
+            ],
+            false_tests=[
+                saxon_func.evaluate('1+1') == 9,
             ]),
     Feature('oob-http', [test_oob('/test/data')]),
     Feature('oob-entity-injection', [test_oob('/test/entity')])
@@ -110,14 +134,29 @@ async def detect_features(context: AttackContext, injector: Injection) -> list[F
             if callable(test):
                 futures.append(test(context, injector))
             elif context.injection:
-                # Injection is set (e.g. time-based mode): pass raw expression
-                # to check(), which handles injection wrapping + delay
                 futures.append(check(context, test))
             else:
-                # No injection set: pre-format through injector
                 futures.append(check(context, injector(context.target_parameter_value, test)))
         checks = await asyncio.gather(*futures)
 
-        returner.append((feature, all(checks)))
+        positive_pass = all(checks)
+
+        # Verify with false_tests: these MUST return False.
+        # If XPath errors cause the oracle to always return True,
+        # these catch the false-positive detection.
+        negative_pass = True
+        if positive_pass and feature.false_tests:
+            false_futures = []
+            for ft in feature.false_tests:
+                if context.injection:
+                    false_futures.append(check(context, ft))
+                else:
+                    false_futures.append(check(context, injector(context.target_parameter_value, ft)))
+            false_checks = await asyncio.gather(*false_futures)
+            if any(false_checks):
+                # A known-false expression returned True → errors masquerading as True
+                negative_pass = False
+
+        returner.append((feature, positive_pass and negative_pass))
 
     return returner

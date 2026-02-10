@@ -29,18 +29,22 @@ async def count(context: AttackContext, expression, count_func=func.count):
 
 async def get_char(context: AttackContext, expression):
     if context.features['codepoint-search']:
-        return await codepoint_search(context, expression)
-    elif context.features['substring-search']:
-        return await substring_search(context, expression)
-    else:
-        # Dumb search
-        top_characters = "".join(c[0] for c in context.common_characters.most_common())
-        search_space = top_characters + "".join(c for c in ASCII_SEARCH_SPACE if c not in top_characters)
+        result = await codepoint_search(context, expression)
+        if result is not None:
+            return result
+    if context.features['substring-search']:
+        result = await substring_search(context, expression)
+        if result is not None:
+            return result
 
-        for space in search_space:
-            if await check(context, expression == space):
-                context.common_characters[space] += 1
-                return space
+    # Dumb search — always the final fallback
+    top_characters = "".join(c[0] for c in context.common_characters.most_common())
+    search_space = top_characters + "".join(c for c in ASCII_SEARCH_SPACE if c not in top_characters)
+
+    for space in search_space:
+        if await check(context, expression == space):
+            context.common_characters[space] += 1
+            return space
 
 
 async def get_common_string(context: AttackContext, expression, length):
