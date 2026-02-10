@@ -28,7 +28,7 @@ For applications that return identical responses regardless of true/false condit
 
 ## Features
 
-- Auto-selects injections (run `xcat injections` for a list)
+- Auto-selects injections (run `xcat-ng injections` for a list)
 - Detects the version and capabilities of the XPath parser and selects the fastest retrieval method
 - Built-in out-of-band HTTP server
     - Automates XXE attacks
@@ -45,10 +45,15 @@ For applications that return identical responses regardless of true/false condit
 
 ## Install
 
+```bash
+pipx install git+https://github.com/Xorriath/xcat-ng.git
 ```
-pip install poetry
+
+Or from source:
+```bash
 git clone https://github.com/Xorriath/xcat-ng.git
 cd xcat-ng
+pip install poetry
 poetry install
 ```
 
@@ -57,34 +62,34 @@ poetry install
 ### Boolean-Based Blind Extraction
 ```bash
 # GET request with content-based detection
-xcat run http://target/page.php q q=value --true-string='Success'
+xcat-ng run http://target/page.php q q=value --true-string='Success'
 
 # POST form with negated match
-xcat run http://target/page.php username username=admin msg=test \
+xcat-ng run http://target/page.php username username=admin msg=test \
   -m POST --encode FORM --true-string='!Error'
 ```
 
 ### In-Band Extraction
 ```bash
 # Extract data directly from response bodies (much faster)
-xcat run http://target/page.php q q=value f=field \
+xcat-ng run http://target/page.php q q=value f=field \
   --true-string='Result' --inband
 ```
 
 ### Time-Based Blind Extraction
 ```bash
 # When responses are identical — use timing as the oracle
-xcat run http://target/page.php username username=admin msg=test \
+xcat-ng run http://target/page.php username username=admin msg=test \
   -m POST --encode FORM --time 6
 ```
 
 ### Detection & Shell
 ```bash
 # Detect injection types and XPath features
-xcat detect http://target/page.php q q=value --true-string='Success'
+xcat-ng detect http://target/page.php q q=value --true-string='Success'
 
 # Interactive shell for manual exploration
-xcat shell http://target/page.php q q=value --true-string='Success'
+xcat-ng shell http://target/page.php q q=value --true-string='Success'
 ```
 
 ## Credits

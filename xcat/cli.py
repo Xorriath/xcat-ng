@@ -16,7 +16,7 @@ from xcat.shell import shell_loop
 
 
 @click.group()
-@click.version_option()
+@click.version_option(package_name='xcat-ng')
 def cli():
     pass
 
