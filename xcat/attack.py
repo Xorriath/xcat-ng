@@ -1,3 +1,4 @@
+import asyncio
 import enum
 import time as time_mod
 from collections import defaultdict, Counter
@@ -11,9 +12,45 @@ from aiohttp import ClientSession, ClientTimeout, TCPConnector, web
 from xcat.oob import create_app
 
 
+class OracleError(Exception):
+    """Base class for failures caused by an unreliable true/false oracle."""
+
+
+class OracleNotDifferentialError(OracleError):
+    """The configured oracle returned the same result for every probe, so it
+    cannot distinguish a true response from a false one (e.g. a --true-string
+    that is present on every page, or wrong polarity)."""
+
+    def __init__(self, value: bool):
+        self.value = value
+        super().__init__(
+            f'the oracle returned {value} for every probe and never '
+            f'differentiated a true response from a false one'
+        )
+
+
+class OracleInconsistencyError(OracleError):
+    """The oracle gave logically contradictory answers (e.g. a value that is
+    reportedly neither <, >, nor = a midpoint), which means it is not a
+    reliable 1-bit channel and extraction cannot be trusted."""
+
+
 class Encoding(enum.Enum):
     URL = 'url'
     FORM = 'form'
+
+
+def response_observation(resp, body: str) -> dict:
+    """Collapse an aiohttp response + decoded body into the structured
+    observation the oracle is allowed to match against. Keeps the redirect
+    signal (Location / final URL / history) reachable even though aiohttp may
+    have transparently followed the redirect before we ever saw it."""
+    return {
+        'location': resp.headers.get('Location', ''),
+        'final_url': str(resp.url),
+        'history': [str(hop.url) for hop in resp.history],
+        'length': len(body),
+    }
 
 
 class Injection(NamedTuple):
@@ -39,7 +76,7 @@ class AttackContext(NamedTuple):
     method: str
     target_parameter: str
     parameters: dict[str, str]
-    match_function: Callable[[int, str], bool]
+    match_function: Callable[[int, str, dict], bool]
     concurrency: int
     fast_mode: bool
     body: bytes | None
@@ -49,6 +86,7 @@ class AttackContext(NamedTuple):
     tamper_function: Callable[[], None]
     inband: bool = False
     proxy: str | None = None
+    follow_redirects: bool = True
     time_based: bool = False
     time_delay_expr: str | None = None
     time_threshold: float = 0.0
@@ -128,7 +166,8 @@ async def timed_request(context: AttackContext, raw_value: str) -> float:
 
     async with context.semaphore:
         start = time_mod.monotonic()
-        async with context.session.request(context.method, context.url, proxy=context.proxy, **args) as resp:
+        async with context.session.request(context.method, context.url, proxy=context.proxy,
+                                           allow_redirects=context.follow_redirects, **args) as resp:
             await resp.text()
         return time_mod.monotonic() - start
 
@@ -156,14 +195,16 @@ async def check(context: AttackContext, payload: str):
     async with context.semaphore:
         if context.time_based:
             start = time_mod.monotonic()
-            async with context.session.request(context.method, context.url, proxy=context.proxy, **args) as resp:
+            async with context.session.request(context.method, context.url, proxy=context.proxy,
+                                               allow_redirects=context.follow_redirects, **args) as resp:
                 await resp.text()
                 elapsed = time_mod.monotonic() - start
             return elapsed >= context.time_threshold
         else:
-            async with context.session.request(context.method, context.url, proxy=context.proxy, **args) as resp:
+            async with context.session.request(context.method, context.url, proxy=context.proxy,
+                                               allow_redirects=context.follow_redirects, **args) as resp:
                 body = await resp.text()
-                return context.match_function(resp.status, body)
+                return context.match_function(resp.status, body, response_observation(resp, body))
 
 
 async def get_response_body(context: AttackContext, raw_value: str,
@@ -196,7 +237,33 @@ async def get_response_with_match(context: AttackContext, raw_value: str,
         context.tamper_function(context, args)
 
     async with context.semaphore:
-        async with context.session.request(context.method, context.url, proxy=context.proxy, **args) as resp:
+        async with context.session.request(context.method, context.url, proxy=context.proxy,
+                                           allow_redirects=context.follow_redirects, **args) as resp:
             body = await resp.text()
-            match = context.match_function(resp.status, body)
+            match = context.match_function(resp.status, body, response_observation(resp, body))
             return body, match
+
+
+async def oracle_self_test(context: AttackContext, injection) -> None:
+    """Validate, right before extraction starts, that the chosen injection
+    produces a real true()/false() differential through the oracle.
+
+    Detection only proves the oracle separated the *detection* probes; this
+    re-asserts it through the exact injection that extraction will drive, so a
+    stuck/saturated oracle (e.g. a working value that matches a real node, or a
+    trailing clause neutralising the injection) fails loudly here instead of
+    silently corrupting the extracted document. Raises OracleInconsistencyError
+    on failure."""
+    from xpath import E
+
+    async with context.start(injection) as ctx:
+        is_true, is_false = await asyncio.gather(
+            check(ctx, E('true()')),
+            check(ctx, E('false()')),
+        )
+
+    if is_true == is_false:
+        raise OracleInconsistencyError(
+            f'true() and false() both evaluated to {is_true} through '
+            f'{injection.name!r}; the oracle is not a reliable 1-bit channel'
+        )

@@ -101,7 +101,23 @@ class NegatableString(Negatable):
         return value
 
 
-def make_match_function(true_code: tuple[bool, int], true_string: tuple[bool, str]) -> Callable[[int, str], bool]:
+def make_match_function(true_code: tuple[bool, int] = None,
+                        true_string: tuple[bool, str] = None,
+                        true_regex: tuple[bool, str] = None,
+                        true_location: tuple[bool, str] = None) -> Callable[[int, str, dict], bool]:
+    """Build the oracle. Each supplied matcher must agree (logical AND) for the
+    response to count as 'true'. The oracle sees the status, the (final) body,
+    and a structured ``extra`` observation so it can also match on the redirect
+    Location / final URL even when aiohttp transparently followed the redirect.
+
+    Every matcher supports a leading '!' negation (already parsed into the
+    bool flag by the Negatable* CLI types).
+    """
+    compiled_regex = None
+    if true_regex is not None:
+        negate_regex, pattern = true_regex
+        compiled_regex = (negate_regex, re.compile(pattern))
+
     def check_code(response_code: int):
         if true_code is None:
             return True
@@ -122,4 +138,28 @@ def make_match_function(true_code: tuple[bool, int], true_string: tuple[bool, st
 
         return expected_string in content
 
-    return lambda code, content: check_code(code) and check_content(content)
+    def check_regex(content: str):
+        if compiled_regex is None:
+            return True
+
+        negate_regex, pattern = compiled_regex
+        found = pattern.search(content) is not None
+        return not found if negate_regex else found
+
+    def check_location(extra: dict):
+        if true_location is None:
+            return True
+
+        negate_location, expected = true_location
+        haystack = ' '.join(part for part in [
+            extra.get('location', ''),
+            extra.get('final_url', ''),
+            *extra.get('history', []),
+        ] if part)
+        present = expected in haystack
+        return not present if negate_location else present
+
+    return lambda code, content, extra: (
+        check_code(code) and check_content(content)
+        and check_regex(content) and check_location(extra)
+    )

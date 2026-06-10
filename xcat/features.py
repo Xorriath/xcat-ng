@@ -125,36 +125,44 @@ features = [
 ]
 
 
+def _negative_tests(feature: Feature) -> list[Expression]:
+    """The known-false probes for a feature. Prefer hand-written false_tests;
+    otherwise auto-derive them by negating each (non-callable) positive test.
+
+    This makes the "errors masquerading as True" guard universal instead of
+    opt-in: previously ~10 of the features (including file-read capabilities
+    like `linux`/`unparsed-text`) shipped no false_test and were accepted on a
+    single bare True, so a saturated/error-masking oracle could false-positive
+    them. A negated positive test errors/saturates in lockstep with its
+    positive, so the control catches the false-positive uniformly."""
+    if feature.false_tests:
+        return list(feature.false_tests)
+    return [func.not_(test) for test in feature.tests if not callable(test)]
+
+
 async def detect_features(context: AttackContext, injector: Injection) -> list[Feature]:
     returner = []
 
-    for feature in features:
-        futures = []
-        for test in feature.tests:
-            if callable(test):
-                futures.append(test(context, injector))
-            elif context.injection:
-                futures.append(check(context, test))
-            else:
-                futures.append(check(context, injector(context.target_parameter_value, test)))
-        checks = await asyncio.gather(*futures)
+    def run(test):
+        if callable(test):
+            return test(context, injector)
+        elif context.injection:
+            return check(context, test)
+        else:
+            return check(context, injector(context.target_parameter_value, test))
 
+    for feature in features:
+        checks = await asyncio.gather(*[run(test) for test in feature.tests])
         positive_pass = all(checks)
 
-        # Verify with false_tests: these MUST return False.
-        # If XPath errors cause the oracle to always return True,
-        # these catch the false-positive detection.
+        # A known-false probe MUST read False. If it reads True the oracle is
+        # treating XPath errors (or everything) as True, so the positive result
+        # is meaningless — reject the feature.
         negative_pass = True
-        if positive_pass and feature.false_tests:
-            false_futures = []
-            for ft in feature.false_tests:
-                if context.injection:
-                    false_futures.append(check(context, ft))
-                else:
-                    false_futures.append(check(context, injector(context.target_parameter_value, ft)))
-            false_checks = await asyncio.gather(*false_futures)
-            if any(false_checks):
-                # A known-false expression returned True → errors masquerading as True
+        negative_tests = _negative_tests(feature)
+        if positive_pass and negative_tests:
+            negative_checks = await asyncio.gather(*[run(ft) for ft in negative_tests])
+            if any(negative_checks):
                 negative_pass = False
 
         returner.append((feature, positive_pass and negative_pass))

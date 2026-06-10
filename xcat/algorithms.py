@@ -4,7 +4,7 @@ import string as stdlib_string
 from xpath import ROOT_NODE, func, Functions
 
 from . import oob
-from .attack import AttackContext, check
+from .attack import AttackContext, check, OracleInconsistencyError
 from .display import XMLNode
 
 fs_func = Functions('Q{http://expath.org/ns/file}')
@@ -163,14 +163,29 @@ async def linear_search(context: AttackContext, expression, max_val=200):
     return -1
 
 
+# Upper bound for the doubling phase. Honest values up to this are searchable;
+# beyond it we fail loudly rather than silently truncating (the old 1M cap
+# returned -1, which callers read as "absent"/empty — silent data loss).
+GROWTH_CEILING = 1_000_000_000
+
+
 async def binary_search(context: AttackContext, expression, min, max=25):
-    if max < 1_000_000 and await check(context, expression > max):
-        return await binary_search(context, expression, min, max * 2)
+    # Grow the upper bound iteratively (not recursively — a stuck-true oracle
+    # would recurse until the stack overflows) until the value is <= max.
+    while await check(context, expression > max):
+        if max >= GROWTH_CEILING:
+            # Either a genuinely enormous value or a stuck-true oracle. A
+            # consistent oracle cannot also report the value below `min`; if it
+            # does, it is contradicting itself. Otherwise the value is really
+            # out of range — raise instead of returning -1 as if it were absent.
+            if await check(context, expression < min):
+                raise OracleInconsistencyError(
+                    f'value reported both > {max} and < {min}; oracle is stuck/non-differential')
+            raise OracleInconsistencyError(
+                f'value exceeds the searchable bound ({GROWTH_CEILING})')
+        max *= 2
 
-    while True:
-        if max < min:
-            return -1
-
+    while min <= max:
         midpoint = (min + max) // 2
 
         if await check(context, expression < midpoint):
@@ -178,7 +193,19 @@ async def binary_search(context: AttackContext, expression, min, max=25):
         elif await check(context, expression > midpoint):
             min = midpoint + 1
         else:
-            return midpoint
+            # Neither < nor > the midpoint, so the candidate is `midpoint`.
+            # Confirm it with an equality probe: a stuck-false oracle answers
+            # "false" to every comparison and would otherwise let us fabricate a
+            # value out of the gap between two negatives.
+            if await check(context, expression == midpoint):
+                return midpoint
+            raise OracleInconsistencyError(
+                f'value is neither <, >, nor = {midpoint}; oracle is inconsistent')
+
+    # min > max without a confirmed value: the < and > answers contradicted each
+    # other, which only happens with an inconsistent oracle (a healthy search
+    # always terminates at the equality-confirmed midpoint above).
+    raise OracleInconsistencyError('binary search collapsed without finding a consistent value')
 
 
 async def substring_search(context: AttackContext, expression):

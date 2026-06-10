@@ -8,7 +8,9 @@ import sys
 import click
 
 from xcat import algorithms, utils
-from xcat.attack import AttackContext, Encoding, make_delay_payload
+from xcat.attack import (AttackContext, Encoding, make_delay_payload,
+                         OracleNotDifferentialError, OracleInconsistencyError,
+                         oracle_self_test)
 from xcat.display import display_xml
 from xcat.features import detect_features, Feature
 from xcat.injections import detect_injections, detect_injections_timed, Injection, injectors
@@ -36,8 +38,16 @@ def attack_options(func):
                   help='Number of concurrent requests to make')
     @click.option('-ts', '--true-string', required=False, type=utils.NegatableString(),
                   help="Interpret this string in the response body as being a truthful request. Negate with '!'")
+    @click.option('-tr', '--true-regex', required=False, type=utils.NegatableString(),
+                  help="Interpret a regex match in the response body as a truthful request. Negate with '!'")
+    @click.option('-tl', '--true-location', required=False, type=utils.NegatableString(),
+                  help="Interpret this substring in the redirect Location / final URL as a truthful request. "
+                       "Useful when the true/false signal is a 302 redirect target. Negate with '!'")
     @click.option('-tc', '--true-code', required=False, type=utils.NegatableInt(),
                   help="Interpret this response code as being a truthful request. Negate with '!'")
+    @click.option('--follow-redirects/--no-follow-redirects', default=True, show_default=True,
+                  help='Follow HTTP redirects before evaluating the oracle. Disable to match on the '
+                       'raw 30x status/Location (use with --true-code/--true-location).')
     @click.option('--enable', required=False, type=utils.FeatureChoice(),
                   help='Force enable features')
     @click.option('--disable', required=False, type=utils.FeatureChoice(),
@@ -57,21 +67,23 @@ def attack_options(func):
     @click.pass_context
     @functools.wraps(func)
     def wrapper(ctx, url, target_parameter, parameters, concurrency, fast, body, headers, method,
-                encode, true_string, true_code, enable, disable, oob, tamper, inband, time_nesting,
-                proxy, **kwargs):
+                encode, true_string, true_regex, true_location, true_code, follow_redirects,
+                enable, disable, oob, tamper, inband, time_nesting, proxy, **kwargs):
         if body and encode != 'url':
             ctx.fail('Can only use --body with url encoding')
 
         if inband and time_nesting:
             ctx.fail('--inband and --time are mutually exclusive')
 
-        if not true_code and not true_string and not time_nesting:
-            ctx.fail('--true-code, --true-string, or --time is required')
+        oracle_given = any([true_code, true_string, true_regex, true_location])
+        if not oracle_given and not time_nesting:
+            ctx.fail('an oracle is required: --true-code, --true-string, --true-regex, '
+                     '--true-location, or --time')
 
-        if true_code or true_string:
-            match_function = utils.make_match_function(true_code, true_string)
+        if oracle_given:
+            match_function = utils.make_match_function(true_code, true_string, true_regex, true_location)
         else:
-            match_function = lambda status, body: False
+            match_function = lambda status, body, extra: False
 
         if time_nesting:
             concurrency = 1
@@ -118,6 +130,7 @@ def attack_options(func):
             tamper_function=tamper_function,
             inband=inband,
             proxy=proxy,
+            follow_redirects=follow_redirects,
             time_based=bool(time_nesting),
             time_delay_expr=make_delay_payload(time_nesting) if time_nesting else None,
         )
@@ -133,15 +146,39 @@ def attack_options(func):
     return wrapper
 
 
+def report_no_injection(err: OracleNotDifferentialError | None):
+    """Distinguish 'not injectable' from 'your oracle is misconfigured' instead
+    of always printing the same opaque message."""
+    click.echo(click.style('Error: No injections detected', 'red'), err=True)
+    if err is None:
+        return
+    if err.value is True:
+        click.echo(click.style(
+            '  The oracle matched EVERY probe (returned true for all of them). Your '
+            '--true-string / --true-regex / --true-code most likely matches all responses, '
+            "or the polarity is inverted — try negating it with a leading '!'.",
+            'yellow'), err=True)
+    else:
+        click.echo(click.style(
+            "  The oracle matched NO probe (returned false for all of them). Either the "
+            "parameter isn't injectable here, or your oracle never recognises a true "
+            "response: wrong string, inverted polarity, or the true/false signal lives in a "
+            "redirect (try --true-location / --true-code with --no-follow-redirects).",
+            'yellow'), err=True)
+
+
 @attack_options
 def detect(attack_context):
     try:
         payloads: list[Injection] = asyncio.run(get_injections(attack_context))
     except KeyboardInterrupt:
         return
+    except OracleNotDifferentialError as err:
+        report_no_injection(err)
+        exit(1)
 
     if not payloads:
-        click.echo(click.style('Error: No injections detected', 'red'), err=True)
+        report_no_injection(None)
         exit(1)
 
     for payload in payloads:
@@ -165,6 +202,9 @@ def run(attack_context):
         asyncio.run(start_attack(attack_context))
     except KeyboardInterrupt:
         pass
+    except OracleInconsistencyError as err:
+        click.echo(click.style(f'Error: oracle became unreliable during extraction: {err}', 'red'), err=True)
+        exit(1)
 
 
 @attack_options
@@ -173,6 +213,9 @@ def shell(attack_context):
         asyncio.run(start_shell(attack_context))
     except KeyboardInterrupt:
         pass
+    except OracleInconsistencyError as err:
+        click.echo(click.style(f'Error: oracle became unreliable during extraction: {err}', 'red'), err=True)
+        exit(1)
 
 
 @cli.command()
@@ -235,9 +278,29 @@ async def setup_context(context: AttackContext) -> AttackContext:
         ))
         context = context._replace(time_threshold=threshold)
     else:
-        detected_injections = await get_injections(context)
+        try:
+            detected_injections = await get_injections(context)
+        except OracleNotDifferentialError as err:
+            report_no_injection(err)
+            exit(1)
         if not detected_injections:
-            click.echo(click.style('Error: No injections detected', 'red'), err=True)
+            report_no_injection(None)
+            exit(1)
+
+        # Re-validate the oracle at the detection->extraction boundary: confirm
+        # the chosen injection still yields a true()/false() differential before
+        # we trust thousands of extraction bits. Catches stuck/saturated oracles
+        # (e.g. a working value that matches a real node) loudly instead of
+        # silently extracting a fabricated document.
+        try:
+            await oracle_self_test(context, detected_injections[0])
+        except OracleInconsistencyError as err:
+            click.echo(click.style(f'Error: {err}', 'red'), err=True)
+            click.echo(click.style(
+                '  The injection passed detection but did not differentiate true from false at '
+                'extraction time. Common causes: the working value matches a real node (use a '
+                'non-existent dummy value) or a trailing clause is neutralising the injection. '
+                'Aborting to avoid extracting fabricated data.', 'yellow'), err=True)
             exit(1)
 
     if context.time_based:
