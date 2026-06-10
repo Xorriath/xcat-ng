@@ -22,6 +22,13 @@ For applications that return identical responses regardless of true/false condit
 - Auto-detects injection type and calibrates timing threshold
 - Linear search optimization — minimizes expensive true (slow) checks
 
+### Robust Detection on Real-World Predicates
+Boolean detection now works when the injection point is **not** the last term in the XPath predicate — the common authentication-bypass shape `…[username='?' and password='…']`, where a trailing `and password=…` clause used to neutralise every payload and produce a silent "No injections detected":
+- **Double-or injectors** (`DUMMY' or … or '`) isolate any trailing clause into a dead `or` branch, and use a non-matching dummy so a valid working value can't pin the predicate true
+- **Redirect-aware oracle** — `--true-location` matches the 302 `Location`/final URL and `--no-follow-redirects` evaluates the raw redirect, for login flows whose only true/false signal is *where* they redirect
+- **Regex oracle** — `--true-regex` for body matches a fixed substring can't express
+- **Oracle calibration** — a misconfigured oracle is reported distinctly ("matched every / no probe") instead of an opaque error, and extraction aborts loudly if the oracle stops differentiating rather than emitting a fabricated document
+
 ### Other Improvements
 - Expanded character search space to all 95 printable ASCII characters
 - Improved robustness across different application behaviors
@@ -67,6 +74,13 @@ xcat-ng run http://target/page.php q q=value --true-string='Success'
 # POST form with negated match
 xcat-ng run http://target/page.php username username=admin msg=test \
   -m POST --encode FORM --true-string='!Error'
+```
+
+### Authentication Bypass (redirect-signalled)
+```bash
+# username AND password predicate; success vs failure differ only by redirect target.
+# The double-or injector handles the trailing `and password=...`; match on the Location.
+xcat-ng run http://target/login.php username username=admin pass=test -m POST --encode FORM --no-follow-redirects --true-location=user.php
 ```
 
 ### In-Band Extraction

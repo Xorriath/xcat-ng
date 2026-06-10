@@ -8,7 +8,14 @@ At _minimum_ you need to supply:
 - A URL to attack (`url`)
 - A target parameter which is vulnerable to XPath injection (`target_parameter`)
 - A value for this parameter, and optionally others if required (`parameters`)
-- A string or a status code that is present in the response if the condition is True (`--true-string` and `--true-code`)
+- An **oracle** that tells xcat when the injected condition is True. Any one (or more) of:
+    - `--true-string` — a substring present in the response body
+    - `--true-regex` — a regex matched against the response body
+    - `--true-code` — a response status code
+    - `--true-location` — a substring of the redirect `Location` / final URL
+
+  Each can be negated with a leading `!` (e.g. `--true-string='!Login failed'`). When several are
+  given they must all agree (logical AND).
 
 To attack the [example vulnerable application](https://github.com/orf/xcat_app) you would use:
 
@@ -76,6 +83,30 @@ Enables the `oob` server. For more info see [the oob server documentation.](OOB-
 
 **Example:** `xcat run ... --oob=$EXTERNAL_IP:$EXTERNAL_PORT`
 
+#### `--true-regex` / `--true-location`
+
+Alternative oracles for when a fixed body substring isn't enough:
+
+- `--true-regex` matches a regular expression against the response body.
+- `--true-location` matches a substring against the redirect `Location` header / final URL. This is
+  the oracle to reach for in **authentication-bypass** style injections, where a successful and a
+  failed login differ only by their redirect target (e.g. `Location: user.php` vs
+  `Location: index.php?msg=Login failed!`) while the response bodies are otherwise identical.
+
+Both can be negated with a leading `!`, and combine (logical AND) with the other oracle options.
+
+**Example:** `xcat run ... --no-follow-redirects --true-location=user.php`
+
+#### `--follow-redirects` / `--no-follow-redirects`
+
+By default xcat **follows** HTTP redirects before evaluating the oracle, so a signal that only
+appears after a 30x (e.g. a "Login failed" message rendered on the page you are redirected to) is
+still seen. Pass `--no-follow-redirects` to evaluate the oracle against the raw 30x response
+instead — required when the only true/false signal is the `Location` header itself. Use it together
+with `--true-location` or `--true-code`.
+
+**Example:** `xcat run ... --no-follow-redirects --true-code=302 --true-location=user.php`
+
 # detect
 
 This command will print out what injection xcat has detected, as well as a list of features and their status. You 
@@ -105,6 +136,22 @@ saxon: False
 oob-http: False
 oob-entity-injection: False
 ``` 
+
+#### Troubleshooting "No injections detected"
+
+When `detect` finds nothing it now tells you *why* where it can:
+
+- **"The oracle matched EVERY probe"** — your oracle is true for every response (e.g. `--true-string`
+  matches text present on every page) or its polarity is inverted. Fix the oracle or negate it with `!`.
+- **"The oracle matched NO probe"** — either the parameter isn't injectable, or the oracle never
+  recognises a true response. If the true/false signal is a redirect, try `--true-location` with
+  `--no-follow-redirects`.
+
+Injection points that are **not the last term** in a predicate — e.g. `…[username='?' and password='…']`,
+the classic authentication bypass — are handled by the `string - … - double-or` injectors, which
+isolate the trailing clause into a dead `or` branch. Before extraction xcat also re-checks that the
+chosen injection still differentiates true from false, and aborts loudly rather than emitting a
+fabricated document if it doesn't.
 
 # run
 
@@ -139,7 +186,7 @@ xcat will use to test if this injection works.
 
 ```shell
 $ xcat injections
-Supports 10 injections:
+Supports 14 injections:
 Name: integer
  Example: /lib/book[id=?]
  Tests:
@@ -150,11 +197,31 @@ Name: string - single quote
  Tests:
    ?' and '1'='1 = passes
    ?' and '1'='2 = fails
+Name: string - single quote - or
+ Example: /lib/book[name='?'] (or-based, use with dummy value)
+ Tests:
+   ?' or true() and '1'='1 = passes
+   ?' or false() and '1'='1 = fails
 Name: string - double quote
  Example: /lib/book[name="?"]
  Tests:
    ?" and "1"="1 = passes
    ?" and "1"="2 = fails
+Name: string - double quote - or
+ Example: /lib/book[name="?"] (or-based, use with dummy value)
+ Tests:
+   ?" or true() and "1"="1 = passes
+   ?" or false() and "1"="1 = fails
+Name: string - single quote - double-or
+ Example: /lib/book[name='?' and pass='...'] (trailing-clause safe; isolates a dummy)
+ Tests:
+   xcatnomatch' or true() or ' = passes
+   xcatnomatch' or false() or ' = fails
+Name: string - double quote - double-or
+ Example: /lib/book[name="?" and pass="..."] (trailing-clause safe; isolates a dummy)
+ Tests:
+   xcatnomatch" or true() or " = passes
+   xcatnomatch" or false() or " = fails
 Name: attribute name - prefix
  Example: /lib/book[?=value]
  Tests:
